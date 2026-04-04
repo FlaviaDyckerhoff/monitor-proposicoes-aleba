@@ -81,22 +81,38 @@ async function enviarEmail(novas) {
   console.log(`✅ Email enviado com ${novas.length} proposições novas.`);
 }
 
-async function buscarPagina(ano, pagina, qtd = 100) {
+async function buscarPagina(ano, pagina, qtd = 100, tentativa = 1) {
+  const maxTentativas = 3;
   const url = `${API_BASE}/proposicao/?pg=${pagina}&qtd=${qtd}&ano=${ano}`;
-  console.log(`  📄 Buscando página ${pagina}...`);
+  console.log(`  📄 Buscando página ${pagina} (qtd=${qtd}, tentativa ${tentativa}/${maxTentativas})...`);
 
-  const response = await fetch(url, {
-    headers: { 'Accept': 'application/json' }
-  });
+  try {
+    const response = await fetch(url, {
+      headers: { 'Accept': 'application/json' }
+    });
 
-  if (!response.ok) {
-    console.error(`❌ Erro na API: ${response.status} ${response.statusText}`);
-    const texto = await response.text();
-    console.error('Resposta:', texto.substring(0, 300));
+    if (!response.ok) {
+      if (response.status === 500 && tentativa < maxTentativas) {
+        console.log(`⏳ API retornou 500 — aguardando 5s antes de tentar novamente...`);
+        await sleep(5000);
+        // Se é página 1 e qtd=100, tentar com qtd=50
+        if (pagina === 1 && qtd === 100) {
+          console.log('🔄 Reduzindo qtd de 100 para 50 na página 1...');
+          return buscarPagina(ano, pagina, 50, tentativa + 1);
+        }
+        return buscarPagina(ano, pagina, qtd, tentativa + 1);
+      }
+      console.error(`❌ Erro na API: ${response.status} ${response.statusText}`);
+      const texto = await response.text();
+      console.error('Resposta:', texto.substring(0, 300));
+      return null;
+    }
+
+    return await response.json();
+  } catch (err) {
+    console.error(`❌ Erro ao fetchar: ${err.message}`);
     return null;
   }
-
-  return await response.json();
 }
 
 async function buscarProposicoes() {
