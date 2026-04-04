@@ -24,7 +24,6 @@ async function enviarEmail(novas) {
     auth: { user: EMAIL_REMETENTE, pass: EMAIL_SENHA },
   });
 
-  // Agrupa por sigla/tipo
   const porTipo = {};
   novas.forEach(p => {
     const tipo = p.tipo || 'OUTROS';
@@ -81,78 +80,47 @@ async function enviarEmail(novas) {
   console.log(`✅ Email enviado com ${novas.length} proposições novas.`);
 }
 
-async function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-async function buscarPagina(ano, pagina, qtd = 100, tentativa = 1) {
-  const maxTentativas = 3;
-  const url = `${API_BASE}/proposicao/?pg=${pagina}&qtd=${qtd}&ano=${ano}`;
-  console.log(`  📄 Buscando página ${pagina} (qtd=${qtd}, tentativa ${tentativa}/${maxTentativas})...`);
-
-  try {
-    const response = await fetch(url, {
-      headers: { 'Accept': 'application/json' }
-    });
-
-    if (!response.ok) {
-      if (response.status === 500 && tentativa < maxTentativas) {
-        console.log(`⏳ API retornou 500 — aguardando 5s antes de tentar novamente...`);
-        await sleep(5000);
-        // Se é página 1 e qtd=100, tentar com qtd=50
-        if (pagina === 1 && qtd === 100) {
-          console.log('🔄 Reduzindo qtd de 100 para 50 na página 1...');
-          return buscarPagina(ano, pagina, 50, tentativa + 1);
-        }
-        return buscarPagina(ano, pagina, qtd, tentativa + 1);
-      }
-      console.error(`❌ Erro na API: ${response.status} ${response.statusText}`);
-      const texto = await response.text();
-      console.error('Resposta:', texto.substring(0, 300));
-      return null;
-    }
-
-    return await response.json();
-  } catch (err) {
-    console.error(`❌ Erro ao fetchar: ${err.message}`);
-    return null;
-  }
-}
-
 async function buscarProposicoes() {
   const ano = new Date().getFullYear();
+  const url = `${API_BASE}/proposicao/?pg=1&qtd=100&ano=${ano}`;
   console.log(`🔍 Buscando proposições de ${ano}...`);
+  console.log(`   URL: ${url}`);
 
-  // Primeira página para saber o total
-  const primeira = await buscarPagina(ano, 1);
-  if (!primeira || !Array.isArray(primeira.Data)) {
-    console.error('❌ Estrutura inesperada na resposta da API.');
-    console.error('Resposta:', JSON.stringify(primeira).substring(0, 300));
+  let response;
+  try {
+    response = await fetch(url, { headers: { 'Accept': 'application/json' } });
+  } catch (err) {
+    console.error(`❌ Erro de conexão: ${err.message}`);
     return [];
   }
 
-  const total = primeira.total || 0;
-  const qtdPorPagina = 100;
-  const totalPaginas = Math.ceil(total / qtdPorPagina);
-  console.log(`📊 Total: ${total} proposições em ${totalPaginas} página(s)`);
-
-  let todas = [...primeira.Data];
-
-  // Busca páginas restantes (limite de 10 páginas = 1000 proposições por run)
-  const maxPaginas = Math.min(totalPaginas, 10);
-  for (let pg = 2; pg <= maxPaginas; pg++) {
-    const json = await buscarPagina(ano, pg);
-    if (!json || !Array.isArray(json.Data)) break;
-    todas = todas.concat(json.Data);
+  if (!response.ok) {
+    console.error(`❌ API retornou ${response.status} — instabilidade no servidor da ALBA.`);
+    console.error('   Nenhuma ação necessária. O monitor vai tentar novamente na próxima execução.');
+    return [];
   }
 
-  console.log(`📦 ${todas.length} proposições carregadas`);
-  return todas;
+  let json;
+  try {
+    json = await response.json();
+  } catch (err) {
+    console.error(`❌ Resposta não é JSON válido: ${err.message}`);
+    return [];
+  }
+
+  if (!Array.isArray(json.Data)) {
+    console.error('❌ Estrutura inesperada — campo Data ausente ou não é array.');
+    console.error('   Amostra:', JSON.stringify(json).substring(0, 200));
+    return [];
+  }
+
+  console.log(`📊 Total na API: ${json.total} proposições (paginação limitada a 100/página)`);
+  console.log(`📦 ${json.Data.length} proposições recebidas neste run`);
+  return json.Data;
 }
 
 function normalizarProposicao(p) {
   const autor = p.AutorRequerenteDados?.nomeRazao || '-';
-  // Extrai só a data (sem hora) do campo "01/04/2026 16:18:25"
   const dataCompleta = p.data || '-';
   const data = dataCompleta.includes(' ') ? dataCompleta.split(' ')[0] : dataCompleta;
 
@@ -178,13 +146,11 @@ function normalizarProposicao(p) {
   const proposicoesRaw = await buscarProposicoes();
 
   if (proposicoesRaw.length === 0) {
-    console.log('⚠️ Nenhuma proposição encontrada.');
+    console.log('⚠️ Nenhuma proposição retornada. Encerrando sem alterar estado.');
     process.exit(0);
   }
 
   const proposicoes = proposicoesRaw.map(normalizarProposicao).filter(p => p.id);
-  console.log(`📊 Total normalizado: ${proposicoes.length}`);
-
   const novas = proposicoes.filter(p => !idsVistos.has(p.id));
   console.log(`🆕 Proposições novas: ${novas.length}`);
 
@@ -192,21 +158,17 @@ function normalizarProposicao(p) {
 
   if (novas.length > 0) {
     if (primeiroRun) {
-      // Primeiro run: salva estado silenciosamente sem enviar email (evita flood de backlog)
       console.log(`⚙️ Primeiro run — salvando ${novas.length} proposição(ões) no estado sem enviar email.`);
-      novas.forEach(p => idsVistos.add(p.id));
-      estado.proposicoes_vistas = Array.from(idsVistos);
     } else {
-      // Runs seguintes: notifica só o que for realmente novo
       novas.sort((a, b) => {
         if (a.tipo < b.tipo) return -1;
         if (a.tipo > b.tipo) return 1;
         return (parseInt(b.numero) || 0) - (parseInt(a.numero) || 0);
       });
       await enviarEmail(novas);
-      novas.forEach(p => idsVistos.add(p.id));
-      estado.proposicoes_vistas = Array.from(idsVistos);
     }
+    novas.forEach(p => idsVistos.add(p.id));
+    estado.proposicoes_vistas = Array.from(idsVistos);
   } else {
     console.log('✅ Sem novidades. Nada a enviar.');
   }
