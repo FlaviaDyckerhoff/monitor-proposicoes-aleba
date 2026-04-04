@@ -81,6 +81,10 @@ async function enviarEmail(novas) {
   console.log(`✅ Email enviado com ${novas.length} proposições novas.`);
 }
 
+async function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function buscarPagina(ano, pagina, qtd = 100, tentativa = 1) {
   const maxTentativas = 3;
   const url = `${API_BASE}/proposicao/?pg=${pagina}&qtd=${qtd}&ano=${ano}`;
