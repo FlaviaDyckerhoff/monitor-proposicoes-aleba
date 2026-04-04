@@ -1,0 +1,12 @@
+{
+  "name": "monitor-proposicoes-ba",
+  "version": "1.0.0",
+  "description": "Monitor automático de proposições da ALBA — Assembleia Legislativa da Bahia",
+  "main": "monitor.js",
+  "scripts": {
+    "start": "node monitor.js"
+  },
+  "dependencies": {
+    "nodemailer": "^6.9.0"
+  }
+}
