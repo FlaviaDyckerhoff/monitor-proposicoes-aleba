@@ -158,7 +158,7 @@ function normalizarProposicao(p) {
 
   if (novas.length > 0) {
     if (primeiroRun) {
-      console.log(`⚙️ Primeiro run — salvando ${novas.length} proposição(ões) no estado sem enviar email.`);
+      console.log(`⚙️ Primeiro run — salvando ${novas.length} proposição(ões) em estado sem enviar email.`);
     } else {
       novas.sort((a, b) => {
         if (a.tipo < b.tipo) return -1;
