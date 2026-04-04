@@ -188,16 +188,25 @@ function normalizarProposicao(p) {
   const novas = proposicoes.filter(p => !idsVistos.has(p.id));
   console.log(`🆕 Proposições novas: ${novas.length}`);
 
+  const primeiroRun = estado.proposicoes_vistas.length === 0;
+
   if (novas.length > 0) {
-    // Ordena por tipo alfabético, depois número decrescente dentro de cada tipo
-    novas.sort((a, b) => {
-      if (a.tipo < b.tipo) return -1;
-      if (a.tipo > b.tipo) return 1;
-      return (parseInt(b.numero) || 0) - (parseInt(a.numero) || 0);
-    });
-    await enviarEmail(novas);
-    novas.forEach(p => idsVistos.add(p.id));
-    estado.proposicoes_vistas = Array.from(idsVistos);
+    if (primeiroRun) {
+      // Primeiro run: salva estado silenciosamente sem enviar email (evita flood de backlog)
+      console.log(`⚙️ Primeiro run — salvando ${novas.length} proposição(ões) no estado sem enviar email.`);
+      novas.forEach(p => idsVistos.add(p.id));
+      estado.proposicoes_vistas = Array.from(idsVistos);
+    } else {
+      // Runs seguintes: notifica só o que for realmente novo
+      novas.sort((a, b) => {
+        if (a.tipo < b.tipo) return -1;
+        if (a.tipo > b.tipo) return 1;
+        return (parseInt(b.numero) || 0) - (parseInt(a.numero) || 0);
+      });
+      await enviarEmail(novas);
+      novas.forEach(p => idsVistos.add(p.id));
+      estado.proposicoes_vistas = Array.from(idsVistos);
+    }
   } else {
     console.log('✅ Sem novidades. Nada a enviar.');
   }
