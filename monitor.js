@@ -588,7 +588,23 @@ async function buscarProposicoes() {
     }
   }
 
-  if (!json) throw new Error(`Fonte ALEBA indisponível após ${MAX_TENTATIVAS_FONTE} tentativas`);
+  if (!json && CONTROLE03_STATE_URL) {
+    const relayUrl = CONTROLE03_STATE_URL.replace(/\/api\/state\/?(?:\?.*)?$/, '/api/aleba-proposicoes');
+    if (relayUrl !== CONTROLE03_STATE_URL) {
+      try {
+        const relayResp = await fetch(relayUrl, { headers: radar03AuthHeaders() });
+        if (!relayResp.ok) throw new Error(`HTTP ${relayResp.status}`);
+        const candidato = await relayResp.json();
+        if (!Array.isArray(candidato.Data)) throw new Error('campo Data ausente ou inválido');
+        json = candidato;
+        console.log('✅ Fonte ALEBA acessada pelo retransmissor operacional');
+      } catch (err) {
+        console.error(`⚠️ Retransmissor ALEBA falhou: ${err.message}`);
+      }
+    }
+  }
+
+  if (!json) throw new Error(`Fonte ALEBA indisponível após ${MAX_TENTATIVAS_FONTE} tentativas e retransmissão`);
 
   const unicas = [...new Map(json.Data.map(item => [String(item.id), item])).values()];
   const prioritarias = unicas.filter(item => TIPOS_PRIORITARIOS.has(String(item.sigla || item.tipo || '').toUpperCase()));
