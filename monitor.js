@@ -34,6 +34,7 @@ const EMAIL_DESTINO = process.env.EMAIL_DESTINO;
 const EMAIL_REMETENTE = process.env.EMAIL_REMETENTE;
 const EMAIL_SENHA = process.env.EMAIL_SENHA;
 const CONTROLE03_FORCE_LATEST = String(process.env.CONTROLE03_FORCE_LATEST || '').trim() === '1';
+const DRY_RUN = String(process.env.DRY_RUN || '').trim() === '1';
 const ARQUIVO_ESTADO = 'estado.json';
 const RADAR03_URL = process.env.RADAR03_URL || 'https://doe.monitorlegislativo.com.br/controle03/';
 const CASA_RADAR03 = process.env.CASA_RADAR03 || 'ALEBA';
@@ -43,6 +44,12 @@ const CONTROLE03_API_PASS = process.env.CONTROLE03_API_PASS || '';
 const CONTROLE03_BASIC_AUTH = process.env.CONTROLE03_BASIC_AUTH || '';
 
 const API_BASE = 'https://albalegis.nopapercloud.com.br/api/publico';
+const ALEBA_BASE = 'https://albalegis.nopapercloud.com.br';
+const TIPOS_PRIORITARIOS = new Set(['PL', 'PLC', 'PEC', 'MSG', 'VETO']);
+// A API declara paginação por `pg`, mas atualmente ignora o parâmetro e
+// repete a primeira página. Uma janela única ampla evita o falso verde.
+const JANELA_FONTE = 500;
+const MAX_TENTATIVAS_FONTE = 3;
 function carregarEstado() {
   if (fs.existsSync(ARQUIVO_ESTADO)) {
     return JSON.parse(fs.readFileSync(ARQUIVO_ESTADO, 'utf8'));
@@ -302,7 +309,9 @@ function radar03AgruparNovidades(novas) {
       ano: partes.ano || String(p?.ano || ''),
       id: String(p?.id || p?.codigo || p?.projeto_id || p?.id_proposicao || ''),
       ementa: String(p?.ementa || p?.resumo || p?.titulo || '').trim(),
-      link: String(p?.link || p?.url || p?.fonte || p?.projeto_url || '').trim(),
+      link: String(p?.proposicao_url || p?.link || p?.url || p?.fonte || p?.projeto_url || '').trim(),
+      linkDadosAbertos: String(p?.dados_abertos_url || '').trim(),
+      linkPdf: String(p?.arquivo || p?.pdf_url || '').trim(),
       clienteSugestao: Array.isArray(p?.clientesCitados) ? p.clientesCitados.join(', ') : '',
       clienteCitado: Array.isArray(p?.clientesCitados) && p.clientesCitados.length > 0,
       clienteCitadoNomes: Array.isArray(p?.clientesCitados) ? p.clientesCitados.join(', ') : '',
@@ -379,6 +388,8 @@ async function sincronizarRadar03(novas) {
         item.fluxo = item.delta ? 'nao_consultado' : (item.fluxo || 'revisado');
         item.ementa = det.ementa || item.ementa || '';
         item.link = det.link || item.link || '';
+        item.linkDadosAbertos = det.linkDadosAbertos || item.linkDadosAbertos || '';
+        item.linkPdf = det.linkPdf || item.linkPdf || '';
         item.clienteSugestao = det.clienteSugestao || item.clienteSugestao || '';
         item.clienteCitado = Boolean(det.clienteCitado || item.clienteCitado);
         item.clienteCitadoNomes = det.clienteCitadoNomes || item.clienteCitadoNomes || item.clienteSugestao || '';
@@ -455,6 +466,35 @@ function renderRadar03EmailButton(novas) {
   `;
 }
 
+function linkDadosAbertosProposicao(p) {
+  const params = new URLSearchParams({
+    pg: '1',
+    qtd: '1',
+    numero: String(p && (p.numero || p.processo || '')).trim(),
+    ano: String(p && p.ano || new Date().getFullYear()).trim(),
+  });
+  const sigla = String(p && (p.sigla || p.tipo || '')).trim();
+  if (sigla) params.set('sigla', sigla);
+  return API_BASE + '/proposicao/?' + params.toString();
+}
+
+function normalizarLinkAlba(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return '';
+  const duplicado = ALEBA_BASE + '/' + ALEBA_BASE + '/';
+  if (raw.startsWith(duplicado)) return ALEBA_BASE + '/' + raw.slice(duplicado.length);
+  return raw;
+}
+
+function linksOficiaisProposicaoHtml(p) {
+  const links = [];
+  const dadosAbertos = p.dados_abertos_url || p.proposicao_url;
+  if (dadosAbertos) links.push('<a href="' + radar03Escape(dadosAbertos) + '" style="color:#1a3a5c" target="_blank">dados abertos</a>');
+  if (p.arquivo) links.push('<a href="' + radar03Escape(p.arquivo) + '" style="color:#1a3a5c" target="_blank">PDF</a>');
+  if (!links.length) return '';
+  return '<div style="margin-top:6px;font-size:11px;color:#64748b">Links oficiais: ' + links.join(' · ') + '</div>';
+}
+
 
 async function enviarEmail(novas) {
   if (CONTROLE03_FORCE_LATEST) {
@@ -478,14 +518,14 @@ async function enviarEmail(novas) {
   const linhas = Object.keys(porTipo).sort(compararTiposEmail).map(tipo => {
     const header = `<tr><td colspan="4" style="padding:10px 8px 4px;background:#f0f4f8;font-weight:bold;color:#1a3a5c;font-size:13px;border-top:2px solid #1a3a5c">${tipo} — ${porTipo[tipo].length} proposição(ões)</td></tr>`;
     const rows = porTipo[tipo].map(p => {
-      const link = p.arquivo
-        ? `<a href="${p.arquivo}" style="color:#1a3a5c;text-decoration:none" target="_blank">${p.numero}/${p.ano}</a>`
+      const link = p.proposicao_url
+        ? `<a href="${p.proposicao_url}" style="color:#1a3a5c;text-decoration:none" target="_blank">${p.numero}/${p.ano}</a>`
         : `${p.numero}/${p.ano}`;
       return `<tr>
         <td style="padding:8px;border-bottom:1px solid #eee"><strong>${link}</strong></td>
         <td style="padding:8px;border-bottom:1px solid #eee;font-size:12px">${p.autor}</td>
         <td style="padding:8px;border-bottom:1px solid #eee;font-size:12px;white-space:nowrap">${p.data}</td>
-        <td style="padding:8px;border-bottom:1px solid #eee;font-size:12px">${renderizarEmentaCliente(p)}</td>
+        <td style="padding:8px;border-bottom:1px solid #eee;font-size:12px">${renderizarEmentaCliente(p)}${linksOficiaisProposicaoHtml(p)}</td>
       </tr>`;
     }).join('');
     return header + rows;
@@ -527,47 +567,42 @@ async function enviarEmail(novas) {
 
 async function buscarProposicoes() {
   const ano = new Date().getFullYear();
-  const url = `${API_BASE}/proposicao/?pg=1&qtd=100&ano=${ano}`;
   console.log(`🔍 Buscando proposições de ${ano}...`);
-  console.log(`   URL: ${url}`);
+  const url = `${API_BASE}/proposicao/?pg=1&qtd=${JANELA_FONTE}&ano=${ano}`;
+  let json = null;
 
-  let response;
-  try {
-    response = await fetch(url, { headers: { 'Accept': 'application/json' } });
-  } catch (err) {
-    console.error(`❌ Erro de conexão: ${err.message}`);
-    return [];
+  for (let tentativa = 1; tentativa <= MAX_TENTATIVAS_FONTE; tentativa += 1) {
+    try {
+      const response = await fetch(url, { headers: { 'Accept': 'application/json' } });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const candidato = await response.json();
+      if (!Array.isArray(candidato.Data)) throw new Error('campo Data ausente ou inválido');
+      if (Number(candidato.total || 0) > 0 && candidato.Data.length === 0) {
+        throw new Error('fonte informou total positivo, mas devolveu janela vazia');
+      }
+      json = candidato;
+      break;
+    } catch (err) {
+      console.error(`⚠️ Fonte ALEBA falhou, tentativa ${tentativa}/${MAX_TENTATIVAS_FONTE}: ${err.message}`);
+      if (tentativa < MAX_TENTATIVAS_FONTE) await new Promise(resolve => setTimeout(resolve, tentativa * 2000));
+    }
   }
 
-  if (!response.ok) {
-    console.error(`❌ API retornou ${response.status} — instabilidade no servidor da ALBA.`);
-    console.error('   Nenhuma ação necessária. O monitor vai tentar novamente na próxima execução.');
-    return [];
-  }
+  if (!json) throw new Error(`Fonte ALEBA indisponível após ${MAX_TENTATIVAS_FONTE} tentativas`);
 
-  let json;
-  try {
-    json = await response.json();
-  } catch (err) {
-    console.error(`❌ Resposta não é JSON válido: ${err.message}`);
-    return [];
-  }
-
-  if (!Array.isArray(json.Data)) {
-    console.error('❌ Estrutura inesperada — campo Data ausente ou não é array.');
-    console.error('   Amostra:', JSON.stringify(json).substring(0, 200));
-    return [];
-  }
-
-  console.log(`📊 Total na API: ${json.total} proposições (paginação limitada a 100/página)`);
-  console.log(`📦 ${json.Data.length} proposições recebidas neste run`);
-  return json.Data;
+  const unicas = [...new Map(json.Data.map(item => [String(item.id), item])).values()];
+  const prioritarias = unicas.filter(item => TIPOS_PRIORITARIOS.has(String(item.sigla || item.tipo || '').toUpperCase()));
+  console.log(`📊 Total declarado: ${json.total}; janela recebida: ${unicas.length}; tipos prioritários: ${prioritarias.length}`);
+  return prioritarias;
 }
 
 function normalizarProposicao(p) {
   const autor = p.AutorRequerenteDados?.nomeRazao || '-';
   const dataCompleta = p.data || '-';
   const data = dataCompleta.includes(' ') ? dataCompleta.split(' ')[0] : dataCompleta;
+
+  const dadosAbertosUrl = linkDadosAbertosProposicao(p);
+  const arquivo = normalizarLinkAlba(p.arquivo);
 
   return {
     id: String(p.id),
@@ -577,7 +612,9 @@ function normalizarProposicao(p) {
     autor: autor.length > 40 ? autor.substring(0, 40) + '…' : autor,
     data,
     ementa: (p.assunto || '-'),
-    arquivo: p.arquivo || null,
+    arquivo: arquivo || null,
+    proposicao_url: dadosAbertosUrl,
+    dados_abertos_url: dadosAbertosUrl,
   };
 }
 
@@ -591,13 +628,21 @@ function normalizarProposicao(p) {
   const proposicoesRaw = await buscarProposicoes();
 
   if (proposicoesRaw.length === 0) {
-    console.log('⚠️ Nenhuma proposição retornada. Encerrando sem alterar estado.');
-    process.exit(0);
+    throw new Error('Fonte ALEBA não retornou PL, PLC, PEC, MSG ou VETO; estado preservado');
   }
 
   const proposicoes = proposicoesRaw.map(normalizarProposicao).filter(p => p.id);
   const novas = proposicoes.filter(p => !idsVistos.has(p.id));
   console.log(`🆕 Proposições novas: ${novas.length}`);
+
+  if (DRY_RUN) {
+    const resumo = novas.reduce((acc, item) => {
+      acc[item.tipo] = (acc[item.tipo] || 0) + 1;
+      return acc;
+    }, {});
+    console.log(`DRY_RUN — sem email, Controle 03 ou alteração de estado: ${JSON.stringify(resumo)}`);
+    return;
+  }
 
   const primeiroRun = estado.proposicoes_vistas.length === 0;
 
