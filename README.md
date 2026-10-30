@@ -1,12 +1,12 @@
 # 🏛️ Monitor Proposições BA — ALBA
 
-Monitora automaticamente a API de Dados Abertos da Assembleia Legislativa da Bahia e envia email quando há proposições novas. Roda **4x por dia** via GitHub Actions (8h, 12h, 17h e 21h, horário de Brasília).
+Monitora automaticamente a API de Dados Abertos da Assembleia Legislativa da Bahia e envia email quando há proposições novas. Roda **1x por dia útil, às 5h (Brasília)**. O horário é controlado por um cron na VPS, que dispara este workflow por `workflow_dispatch`; o repositório não possui `schedule` próprio por decisão operacional.
 
 ---
 
 ## Como funciona
 
-1. O GitHub Actions roda o script nos horários configurados
+1. Às 5h BRT, de segunda a sexta, o dispatcher da VPS aciona o GitHub Actions
 2. O script chama a API pública da ALBA (`albalegis.nopapercloud.com.br/api/publico`)
 3. Compara as proposições recebidas com as já registradas no `estado.json`
 4. Se há proposições novas → envia email com a lista organizada por tipo
@@ -97,9 +97,9 @@ Abra o arquivo `monitor.yml`, copie todo o conteúdo e cole. Clique em **Commit 
 
 **5.1** Vá em **Actions → Monitor Proposições BA → Run workflow → Run workflow**
 
-**5.2** Aguarde ~30 segundos (são ~6 páginas na API). Verde = funcionou.
+**5.2** Aguarde a conclusão. Verde significa que a fonte oficial ou o retransmissor operacional respondeu com uma janela válida; falha nas duas rotas encerra o run em vermelho sem alterar o estado.
 
-**5.3** O **primeiro run** envia email com todas as proposições do ano atual e salva o estado. A partir do segundo run, só envia se houver proposições novas.
+**5.3** O **primeiro run** salva as proposições encontradas no estado sem enviar email. A partir do segundo run, só envia se houver proposições novas.
 
 ---
 
@@ -126,11 +126,13 @@ Os números das proposições são links clicáveis que abrem o PDF diretamente.
 
 ```
 URL Base:  https://albalegis.nopapercloud.com.br/api/publico
-Endpoint:  GET /proposicao/?pg=1&qtd=100&ano=2026
+Endpoint:  GET /proposicao/?pg=1&qtd=500&ano=2026
 Docs:      https://albalegis.nopapercloud.com.br/dados-abertos.aspx
 ```
 
 API pública e documentada, sem autenticação.
+
+> **Limitação conhecida:** a API declara paginação por `pg`, mas atualmente repete a primeira página. Por isso o monitor consulta uma janela única de 500 registros e filtra `PL`, `PLC`, `PEC`, `MSG` e `VETO`. Se a fonte direta falhar, tenta o retransmissor operacional antes de encerrar em erro. Uma interrupção longa o bastante para produzir mais de 500 registros continua exigindo recuperação específica.
 
 **Campos mapeados:**
 
@@ -146,14 +148,13 @@ API pública e documentada, sem autenticação.
 
 ---
 
-## Horários de execução
+## Horário de execução
 
-| Horário BRT | Cron UTC |
-|-------------|----------|
-| 08:00       | 0 11 * * * |
-| 12:00       | 0 15 * * * |
-| 17:00       | 0 20 * * * |
-| 21:00       | 0 0 * * *  |
+| Frequência | Horário BRT | Gatilho |
+|------------|-------------|---------|
+| Segunda a sexta | 05:00 | Cron da VPS às 08:00 UTC → `workflow_dispatch` |
+
+O workflow mantém apenas o gatilho manual de propósito. O cron operacional fica no workspace da VPS em `scripts/dispatch_proposicoes_novas_github.sh`.
 
 ---
 
@@ -184,6 +185,6 @@ Para forçar o reenvio de todas as proposições (útil para testar):
 **Rodou mas não veio email**
 → Verifique o spam. Se não estiver lá, abra o log do run e procure por `❌` ou `⚠️`.
 
-**Log mostra "0 proposições encontradas"**
-→ Pode ser instabilidade na API da ALBA. Tente acessar diretamente no browser:
+**Run encerrou em vermelho por indisponibilidade da fonte**
+→ O monitor tentou a API da ALBA três vezes e depois o retransmissor operacional. O estado foi preservado para evitar falso sucesso. Confira a fonte oficial e reexecute quando ela voltar:
 `https://albalegis.nopapercloud.com.br/api/publico/proposicao/?pg=1&qtd=1&ano=2026`
